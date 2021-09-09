@@ -1,0 +1,188 @@
+name: "Java microservice build pipeline"
+
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+
+concurrency: build-${{ github.ref }}-${{ github.event_name }}
+
+jobs:
+  semver:
+    name: "Calculate the next semantic version"
+    runs-on: ubuntu-20.04
+    outputs:
+      new_version: ${{ steps.semantic.outputs.version }}
+
+    steps:
+      - name: "Checkout code with tags"
+        uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
+
+      - name: "Calculate the next semver"
+        id: semantic
+        uses: zwaldowski/semver-release-action@v2
+        with:
+          bump: patch
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          dry_run: true
+
+  build:
+    name: "Build Java app, Docker image, push to ECR"
+    runs-on: ubuntu-20.04
+    needs: [ semver ]
+
+    steps:
+      - name: "Checkout code"
+        uses: actions/checkout@v2
+
+      - name: "Set up JDK"
+        uses: actions/setup-java@v2
+        with:
+          java-version: '11'
+          distribution: 'temurin'
+          cache: 'maven'
+
+      - name: "Set SNAPSHOT artefact version"
+        if: ${{ github.event_name == 'pull_request' }}
+        run: mvn -B versions:set -DnewVersion=${{needs.semver.outputs.new_version}}-SNAPSHOT --gs settings.xml
+
+      - name: "Set RELEASE artefact version"
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+        run: mvn -B versions:set -DnewVersion=${{needs.semver.outputs.new_version}} --gs settings.xml
+
+      - name: "Build with Maven"
+        run: mvn -B clean package --gs settings.xml
+
+      - name: "Set up Docker Buildx"
+        id: buildx
+        uses: docker/setup-buildx-action@v1
+        with:
+          driver: docker
+
+      - name: "Build Snapshot container image and push to ECR"
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: docker/build-push-action@v2
+        with:
+          push: true
+          build-args: "version=${{needs.semver.outputs.new_version}}-SNAPSHOT"
+          context: ${{ env.REPO_NAME }}-app/target
+          file: ${{ github.workspace }}/Dockerfile
+          tags: |
+            ${{ env.ECR }}/${{ env.REPO_NAME }}:${{ needs.semver.outputs.new_version }}-pr${{ github.event.pull_request.number }}.${{ github.run_id }}
+
+      - name: "Build Release container image and push to ECR"
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+        uses: docker/build-push-action@v2
+        with:
+          push: true
+          build-args: "version=${{needs.semver.outputs.new_version}}"
+          context: ${{ env.REPO_NAME }}-app/target
+          file: ${{ github.workspace }}/Dockerfile
+          tags: |
+            ${{ env.ECR }}/${{ env.REPO_NAME }}:${{ needs.semver.outputs.new_version }}
+
+  lint:
+    name: "Dockerfile linting"
+    runs-on: ubuntu-20.04
+    needs: [ semver ]
+
+    steps:
+      - name: "Checkout code"
+        uses: actions/checkout@v2
+
+      - name: "Lint Dockerfile"
+        uses: docker://ghcr.io/github/super-linter:slim-v4
+        env:
+          VALIDATE_ALL_CODEBASE: true
+          DEFAULT_BRANCH: ${{ github.head_ref }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VALIDATE_DOCKERFILE: true
+          VALIDATE_DOCKERFILE_HADOLINT: true
+          MULTI_STATUS: true
+
+  sonar_ci:
+    name: "Sonar scanning CI"
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+    runs-on: ubuntu-20.04
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    needs: [ semver ]
+
+    steps:
+      - name: "Checkout code with tags"
+        uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
+
+      - name: "Set up JDK"
+        uses: actions/setup-java@v2
+        with:
+          java-version: '11'
+          distribution: 'temurin'
+          cache: 'maven'
+
+      - name: "Sonar scan CI"
+        run: |
+          mvn -B clean verify sonar:sonar -Dsonar.login=${{ secrets.PROD_SONARCLOUD_TOKEN }} \
+          -Dsonar.projectVersion=${{ needs.semver.outputs.new_version }}
+
+  sonar_pr:
+    name: "Sonar scanning PR"
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-20.04
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    needs: [ semver ]
+
+    steps:
+      - name: "Checkout code with tags"
+        uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
+
+      - name: "Set up JDK"
+        uses: actions/setup-java@v2
+        with:
+          java-version: '11'
+          distribution: 'temurin'
+          cache: 'maven'
+
+      - name: "Sonar scan PR"
+        run: |
+          mvn clean verify -B sonar:sonar -Dsonar.login=${{ secrets.PROD_SONARCLOUD_TOKEN }} \
+            -Dsonar.projectVersion=${{ needs.semver.outputs.new_version }}.${{ github.run_id }}-SNAPSHOT \
+            -Dsonar.pullrequest.key="$(echo ${GITHUB_REF} | cut -d'/' -f3)" \
+            -Dsonar.pullrequest.branch="${GITHUB_HEAD_REF}" \
+            -Dsonar.pullrequest.github.repository="${GITHUB_REPOSITORY}"  \
+            -Dsonar.pullrequest.base="${GITHUB_BASE_REF}"
+
+  release:
+    name: "Create release on GitHub"
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+    runs-on: ubuntu-20.04
+    needs: [ int_testing_ci ]
+
+    steps:
+      - name: "Checkout code with tags"
+        uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
+
+      - name: "Calculate the next RELEASE version and push tag"
+        id: semantic
+        uses: zwaldowski/semver-release-action@v2
+        with:
+          bump: patch
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: "Create GitHub release"
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.semantic.outputs.version }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
