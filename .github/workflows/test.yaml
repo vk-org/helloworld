@@ -126,7 +126,7 @@ jobs:
 
       - name: "Sonar scan CI"
         run: |
-          mvn -B clean verify sonar:sonar -Dsonar.login=${{ secrets.PROD_SONARCLOUD_TOKEN }} \
+          mvn -B clean verify sonar:sonar -Dsonar.login=${{ secrets.SONARCLOUD_TOKEN }} \
           -Dsonar.projectVersion=${{ needs.semver.outputs.new_version }}
 
   sonar_pr:
@@ -153,7 +153,7 @@ jobs:
 
       - name: "Sonar scan PR"
         run: |
-          mvn clean verify -B sonar:sonar -Dsonar.login=${{ secrets.PROD_SONARCLOUD_TOKEN }} \
+          mvn clean verify -B sonar:sonar -Dsonar.login=${{ secrets.SONARCLOUD_TOKEN }} \
             -Dsonar.projectVersion=${{ needs.semver.outputs.new_version }}.${{ github.run_id }}-SNAPSHOT \
             -Dsonar.pullrequest.key="$(echo ${GITHUB_REF} | cut -d'/' -f3)" \
             -Dsonar.pullrequest.branch="${GITHUB_HEAD_REF}" \
@@ -164,7 +164,7 @@ jobs:
     name: "Create release on GitHub"
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
     runs-on: ubuntu-20.04
-    needs: [ int_testing_ci ]
+    needs: [ build ]
 
     steps:
       - name: "Checkout code with tags"
