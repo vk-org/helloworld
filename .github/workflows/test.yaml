@@ -47,42 +47,14 @@ jobs:
 
       - name: "Set SNAPSHOT artefact version"
         if: ${{ github.event_name == 'pull_request' }}
-        run: mvn -B versions:set -DnewVersion=${{needs.semver.outputs.new_version}}-SNAPSHOT --gs settings.xml
+        run: mvn -B versions:set -DnewVersion=${{needs.semver.outputs.new_version}}-SNAPSHOT
 
       - name: "Set RELEASE artefact version"
         if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
-        run: mvn -B versions:set -DnewVersion=${{needs.semver.outputs.new_version}} --gs settings.xml
+        run: mvn -B versions:set -DnewVersion=${{needs.semver.outputs.new_version}}
 
       - name: "Build with Maven"
-        run: mvn -B clean package --gs settings.xml
-
-      - name: "Set up Docker Buildx"
-        id: buildx
-        uses: docker/setup-buildx-action@v1
-        with:
-          driver: docker
-
-      - name: "Build Snapshot container image and push to ECR"
-        if: ${{ github.event_name == 'pull_request' }}
-        uses: docker/build-push-action@v2
-        with:
-          push: true
-          build-args: "version=${{needs.semver.outputs.new_version}}-SNAPSHOT"
-          context: ${{ env.REPO_NAME }}-app/target
-          file: ${{ github.workspace }}/Dockerfile
-          tags: |
-            ${{ env.ECR }}/${{ env.REPO_NAME }}:${{ needs.semver.outputs.new_version }}-pr${{ github.event.pull_request.number }}.${{ github.run_id }}
-
-      - name: "Build Release container image and push to ECR"
-        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
-        uses: docker/build-push-action@v2
-        with:
-          push: true
-          build-args: "version=${{needs.semver.outputs.new_version}}"
-          context: ${{ env.REPO_NAME }}-app/target
-          file: ${{ github.workspace }}/Dockerfile
-          tags: |
-            ${{ env.ECR }}/${{ env.REPO_NAME }}:${{ needs.semver.outputs.new_version }}
+        run: mvn -B clean package
 
   lint:
     name: "Dockerfile linting"
